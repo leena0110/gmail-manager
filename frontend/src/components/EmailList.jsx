@@ -1,4 +1,4 @@
-import { formatDistanceToNow } from 'date-fns';
+import { format, isToday, isYesterday } from 'date-fns';
 import { Mail, Loader2, ShieldAlert } from 'lucide-react';
 
 export default function EmailList({ folderName, emails, isLoading, selectedEmailId, onSelectEmail }) {
@@ -21,7 +21,7 @@ export default function EmailList({ folderName, emails, isLoading, selectedEmail
       <div className="email-list-header">
         <div className="email-list-title">{folderName}</div>
         <div className={`email-count-badge ${folderName.toLowerCase() === 'junk' ? 'junk-badge' : ''}`}>
-          {emails.length}
+          {emails.filter(e => e.is_unread).length}
         </div>
       </div>
 
@@ -39,9 +39,26 @@ export default function EmailList({ folderName, emails, isLoading, selectedEmail
               onClick={() => onSelectEmail(email)}
             >
               <div className="email-row-meta">
-                <div className="email-row-sender">{email.sender.split('<')[0].trim()}</div>
+                <div className="email-row-sender" style={{ fontWeight: email.is_unread ? 700 : 500, color: email.is_unread ? 'var(--accent)' : 'var(--text-dark)' }}>
+                  {email.is_unread && <span style={{ display: 'inline-block', width: 6, height: 6, background: 'var(--accent)', borderRadius: '50%', marginRight: 6, marginBottom: 1 }}></span>}
+                  {email.sender.split('<')[0].trim()}
+                </div>
                 <div className="email-row-date">
-                  {email.received_at ? formatDistanceToNow(new Date(email.received_at.endsWith('Z') ? email.received_at : email.received_at + 'Z'), { addSuffix: true }) : ''}
+                  {(() => {
+                    try {
+                      if (!email.received_at) return '';
+                      // Let the browser handle the ISO string with offset correctly
+                      const date = new Date(email.received_at);
+                      
+                      if (isNaN(date.getTime())) return 'Recently';
+                      
+                      if (isToday(date)) return format(date, 'h:mm a');
+                      if (isYesterday(date)) return 'Yesterday';
+                      return format(date, 'MMM d, h:mm a');
+                    } catch (e) {
+                      return 'Recently';
+                    }
+                  })()}
                 </div>
               </div>
               <div className="email-row-subject">
@@ -49,7 +66,7 @@ export default function EmailList({ folderName, emails, isLoading, selectedEmail
                 {email.is_junk && folderName !== 'Junk' && <span className="junk-tag" style={{ marginLeft: 6 }}>JUNK</span>}
               </div>
               <div className="email-row-preview">
-                {email.body.substring(0, 60)}...
+                {email.body.replace(/<[^>]*>?/gm, '').substring(0, 60)}...
               </div>
             </div>
           ))

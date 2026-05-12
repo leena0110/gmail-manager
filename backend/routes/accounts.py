@@ -2,27 +2,22 @@
 routes/accounts.py — Account Management Routes
 ================================================
 Handles listing and deleting Gmail accounts:
-1. GET    /accounts/       → List all connected Gmail accounts
-2. DELETE /accounts/{email} → Remove a Gmail account and its emails
+1. GET    /accounts/       → List all connected Gmail accounts with unread counts
+2. DELETE /accounts/{email} → Remove a Gmail account
 """
 
 from fastapi import APIRouter, HTTPException
-from database import accounts_collection, emails_collection
+from database import accounts_collection
+from services.gmail_service import get_unread_count
 
 # Create the router for account-related endpoints
 router = APIRouter()
 
-
-# ============================================
-# ENDPOINT: GET /accounts/
-# ============================================
-# Purpose: Return a list of all connected Gmail accounts
-# The frontend sidebar uses this to show account folders
 @router.get("/")
 async def list_accounts():
     """
     Get all Gmail accounts that have been added.
-    Returns email and added_at for each account (no tokens!).
+    Returns email, added_at, and unread count for each account.
     """
     # Fetch all accounts from MongoDB
     accounts = accounts_collection.find({})
@@ -30,40 +25,34 @@ async def list_accounts():
     # Convert to a list of dictionaries (safe for frontend)
     account_list = []
     for account in accounts:
+        # Use cached unread count from the database (updated by background sync)
+        unread_count = account.get("unread_count", 0)
+        
         account_list.append({
-            "id": str(account["_id"]),          # Convert ObjectId to string
+            "id": str(account["_id"]),
             "email": account["email"],
             "added_at": account.get("added_at", ""),
+            "unread_count": unread_count
         })
 
     return {"accounts": account_list}
 
-
-# ============================================
-# ENDPOINT: DELETE /accounts/{email}
-# ============================================
-# Purpose: Remove a Gmail account and all its emails
-# Called when the user wants to disconnect a Gmail account
 @router.delete("/{email}")
 async def delete_account(email: str):
     """
-    Delete a Gmail account and all associated emails.
-    This removes the account tokens AND all fetched emails for that account.
+    Delete a Gmail account.
+    This removes the account tokens from the database.
     """
     # Check if the account exists
     account = accounts_collection.find_one({"email": email})
     if not account:
         raise HTTPException(status_code=404, detail=f"Account {email} not found")
 
-    # Delete all emails belonging to this account
-    deleted_emails = emails_collection.delete_many({"account_email": email})
-
     # Delete the account itself
     accounts_collection.delete_one({"email": email})
 
-    print(f"🗑️ Deleted account {email} and {deleted_emails.deleted_count} emails")
+    print(f"[OK] Deleted account {email}")
 
     return {
         "message": f"Account {email} deleted successfully",
-        "emails_deleted": deleted_emails.deleted_count,
     }

@@ -16,7 +16,7 @@ import asyncio
 from datetime import datetime
 
 from database import accounts_collection, emails_collection
-from services.gmail_service import fetch_emails_for_account
+from services.gmail_service import fetch_emails_from_gmail
 from services.ai_service import classify_email
 
 # How often to check for new emails (in seconds)
@@ -34,13 +34,13 @@ async def start_sync_loop():
     global _sync_running
     _sync_running = True
 
-    print(f"🔄 Background sync started (checking every {SYNC_INTERVAL}s)")
+    print(f"[SYNC] Background sync started (checking every {SYNC_INTERVAL}s)")
 
     while _sync_running:
         try:
             await sync_all_accounts()
         except Exception as e:
-            print(f"❌ Sync loop error: {e}")
+            print(f"[ERROR] Sync loop error: {e}")
 
         # Wait before checking again
         await asyncio.sleep(SYNC_INTERVAL)
@@ -50,7 +50,7 @@ async def stop_sync_loop():
     """Stop the background sync loop gracefully."""
     global _sync_running
     _sync_running = False
-    print("🛑 Background sync stopped")
+    print("[STOP] Background sync stopped")
 
 
 async def sync_all_accounts():
@@ -65,7 +65,7 @@ async def sync_all_accounts():
         return  # No accounts to sync, skip silently
 
     print(f"\n{'='*50}")
-    print(f"🔄 Syncing {len(accounts)} account(s)... [{datetime.utcnow().strftime('%H:%M:%S')}]")
+    print(f"[SYNC] Syncing {len(accounts)} account(s)... [{datetime.utcnow().strftime('%H:%M:%S')}]")
     print(f"{'='*50}")
 
     for account in accounts:
@@ -85,22 +85,22 @@ async def sync_single_account(account):
         account: MongoDB document with account info and tokens
     """
     email_address = account["email"]
-    print(f"\n📧 Syncing: {email_address}")
+    print(f"\n[SYNC] Syncing: {email_address}")
 
     # --- Step 1: Fetch new emails from Gmail ---
     # This runs in a thread pool because it makes HTTP calls (blocking I/O)
     loop = asyncio.get_event_loop()
     new_emails = await loop.run_in_executor(
         None,
-        fetch_emails_for_account,
+        fetch_emails_from_gmail,
         account,
     )
 
     if not new_emails:
-        print(f"   ✅ No new emails for {email_address}")
+        print(f"   [OK] No new emails for {email_address}")
         return
 
-    print(f"   📨 Processing {len(new_emails)} new email(s)...")
+    print(f"   [INFO] Processing {len(new_emails)} new email(s)...")
 
     # --- Step 2 & 3: Classify each email and save to MongoDB ---
     for email_data in new_emails:
@@ -114,9 +114,14 @@ async def sync_single_account(account):
                 email_data["body"],
             )
 
-            # Add classification results to the email data
-            email_data["is_junk"] = is_junk
-            email_data["folder"] = "junk" if is_junk else "inbox"
+            # Determine the correct folder based on Gmail labels
+            labels = email_data.get("labelIds", [])
+            if "SENT" in labels:
+                email_data["folder"] = "sent"
+            elif is_junk or "SPAM" in labels:
+                email_data["folder"] = "junk"
+            else:
+                email_data["folder"] = "inbox"
 
             # Save to MongoDB (upsert to avoid duplicates)
             emails_collection.update_one(
@@ -128,10 +133,18 @@ async def sync_single_account(account):
                 upsert=True,
             )
 
-            folder_label = "🚫 Junk" if is_junk else "✅ Inbox"
-            print(f"   💾 Saved: {email_data['subject'][:40]}... → {folder_label}")
+            folder_label = "JUNK" if is_junk else "INBOX"
+            print(f"   [SAVED] {email_data['subject'][:40]}... -> {folder_label}")
 
         except Exception as e:
-            print(f"   ❌ Error processing email {email_data.get('gmail_id')}: {e}")
+            print(f"   [ERROR] Error processing email {email_data.get('gmail_id')}: {e}")
 
-    print(f"   ✅ Sync complete for {email_address}")
+    # --- Step 4: Update unread count for the account ---
+    from services.gmail_service import get_unread_count
+    unread_count = get_unread_count(account)
+    accounts_collection.update_one(
+        {"email": email_address},
+        {"$set": {"unread_count": unread_count}}
+    )
+
+    print(f"   [OK] Sync complete for {email_address} (Unread: {unread_count})")

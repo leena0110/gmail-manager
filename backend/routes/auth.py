@@ -31,6 +31,8 @@ router = APIRouter()
 # These scopes define what permissions we're asking for
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",  # Read emails
+    "https://www.googleapis.com/auth/gmail.send",      # Send emails
+    "https://www.googleapis.com/auth/gmail.modify",    # Mark as read/unread
     "https://www.googleapis.com/auth/userinfo.email",   # Get user's email address
     "openid",                                            # OpenID Connect
 ]
@@ -153,13 +155,13 @@ async def callback(code: str):
             upsert=True,                     # Create if doesn't exist
         )
 
-        print(f"✅ Account added/updated: {user_email}")
+        print(f"[OK] Account added/updated: {user_email}")
 
         # Redirect the user back to the frontend dashboard
         return RedirectResponse(url="http://localhost:5173/oauth/callback?success=true")
 
     except Exception as e:
-        print(f"❌ OAuth callback error: {e}")
+        print(f"[ERROR] OAuth callback error: {e}")
         return RedirectResponse(
             url=f"http://localhost:5173/oauth/callback?error={str(e)}"
         )

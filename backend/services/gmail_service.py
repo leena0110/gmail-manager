@@ -3,8 +3,9 @@ services/gmail_service.py — Gmail API Integration
 ===================================================
 This service handles all communication with the Gmail API:
 - Building Gmail API client with OAuth credentials
-- Fetching new emails from a Gmail account
+- Fetching emails directly from a Gmail account (Inbox, Sent)
 - Parsing email content (subject, body, sender, date)
+- Sending new emails
 - Refreshing expired access tokens automatically
 """
 
@@ -12,13 +13,14 @@ import os
 import base64
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+from email.message import EmailMessage
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
 
-from database import accounts_collection, emails_collection
+from database import accounts_collection
 
 # Load environment variables
 load_dotenv()
@@ -27,18 +29,8 @@ load_dotenv()
 def get_gmail_service(account):
     """
     Build a Gmail API service client for a specific account.
-    
-    This creates authenticated credentials from the stored tokens
-    and automatically refreshes them if they've expired.
-    
-    Args:
-        account: MongoDB document with email, access_token, refresh_token, etc.
-    
-    Returns:
-        Gmail API service object, or None if authentication fails.
     """
     try:
-        # Create credentials from stored tokens
         credentials = Credentials(
             token=account["access_token"],
             refresh_token=account["refresh_token"],
@@ -47,12 +39,9 @@ def get_gmail_service(account):
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
         )
 
-        # If the token has expired, refresh it automatically
         if credentials.expired and credentials.refresh_token:
-            print(f"🔄 Refreshing token for {account['email']}...")
+            print(f"[REFRESH] Refreshing token for {account['email']}...")
             credentials.refresh(Request())
-
-            # Save the new access token back to MongoDB
             accounts_collection.update_one(
                 {"email": account["email"]},
                 {
@@ -62,108 +51,180 @@ def get_gmail_service(account):
                     }
                 },
             )
-            print(f"✅ Token refreshed for {account['email']}")
+            print(f"[OK] Token refreshed for {account['email']}")
 
-        # Build and return the Gmail API service
         service = build("gmail", "v1", credentials=credentials)
         return service
 
     except Exception as e:
-        print(f"❌ Failed to build Gmail service for {account['email']}: {e}")
+        print(f"[ERROR] Failed to build Gmail service for {account['email']}: {e}")
         return None
 
 
-def fetch_emails_for_account(account):
+def fetch_emails_from_gmail(account, folder="inbox", max_results=20):
     """
-    Fetch new emails from a Gmail account.
-    
-    This function:
-    1. Connects to Gmail API
-    2. Gets the latest 20 messages from the inbox
-    3. Checks which ones we already have in our database
-    4. Downloads and parses only the NEW emails
-    5. Returns a list of new email data dictionaries
-    
-    Args:
-        account: MongoDB document with account info and tokens
-    
-    Returns:
-        List of new email dictionaries (not yet saved to DB)
+    Fetch emails directly from Gmail for a specific folder.
     """
-    # Build the Gmail API client
     service = get_gmail_service(account)
     if not service:
         return []
 
     try:
-        # --- Step 1: Get list of recent message IDs ---
-        # We fetch the latest 20 messages from the INBOX and SPAM folders
-        # (Using 'q' instead of 'labelIds' so we get an OR condition)
+        query = "in:inbox"
+        if folder == "sent":
+            query = "in:sent"
+        elif folder == "junk":
+            query = "in:spam"
+
         results = service.users().messages().list(
             userId="me",
-            q="in:inbox OR in:spam",
-            maxResults=20,
+            q=query,
+            maxResults=max_results,
         ).execute()
 
         messages = results.get("messages", [])
-
+        print(f"[DEBUG] Found {len(messages)} messages for {account['email']} in {folder}")
         if not messages:
-            print(f"📭 No messages found for {account['email']}")
             return []
 
-        print(f"📬 Found {len(messages)} messages for {account['email']}")
-
-        # --- Step 2: Filter out emails we already have ---
-        new_emails = []
+        fetched_emails = []
         for msg in messages:
-            gmail_id = msg["id"]
-
-            # Check if this email already exists in our database
-            existing = emails_collection.find_one({
-                "gmail_id": gmail_id,
-                "account_email": account["email"],
-            })
-
-            if existing:
-                # We already have this email, skip it
-                continue
-
-            # --- Step 3: Fetch the full email content ---
-            email_data = parse_email_message(service, gmail_id, account["email"])
+            email_data = parse_email_message(service, msg["id"], account["email"])
             if email_data:
-                new_emails.append(email_data)
+                # Use labelIds already fetched in parse_email_message
+                is_unread = "UNREAD" in email_data.get("labelIds", [])
+                email_data["is_unread"] = is_unread
+                
+                # Format for frontend
+                email_data["id"] = msg["id"]
+                email_data["folder"] = folder
+                fetched_emails.append(email_data)
 
-        print(f"📨 {len(new_emails)} new emails for {account['email']}")
-        return new_emails
+        print(f"[DEBUG] Successfully parsed {len(fetched_emails)} emails for {account['email']}")
+        return fetched_emails
 
     except Exception as e:
-        print(f"❌ Error fetching emails for {account['email']}: {e}")
+        print(f"[ERROR] Error fetching emails for {account['email']}: {e}")
         return []
 
 
-def parse_email_message(service, gmail_id, account_email):
-    """
-    Fetch and parse a single email message from Gmail API.
-    
-    Extracts the subject, sender, body text, and date from the email.
-    
-    Args:
-        service: Gmail API service object
-        gmail_id: The Gmail message ID
-        account_email: The account this email belongs to
-    
-    Returns:
-        Dictionary with parsed email data, or None if parsing fails
-    """
+def get_single_email_from_gmail(account, gmail_id):
+    """Fetch a single email directly from Gmail."""
+    service = get_gmail_service(account)
+    if not service:
+        return None
+    email_data = parse_email_message(service, gmail_id, account["email"])
+    if email_data:
+        email_data["id"] = gmail_id
+        email_data["folder"] = "inbox"  # default fallback
+        return email_data
+    return None
+
+
+def get_unread_count(account):
+    """Get the exact number of unread emails in the inbox using Label metadata."""
+    service = get_gmail_service(account)
+    if not service:
+        return 0
     try:
-        # Fetch the full message
+        # Fetch metadata for the INBOX label, which contains the unread count
+        results = service.users().labels().get(userId="me", id="INBOX").execute()
+        return results.get("messagesUnread", 0)
+    except Exception as e:
+        print(f"[ERROR] Could not fetch unread count for {account['email']}: {e}")
+        return 0
+
+
+def send_email(account, to, subject, body, attachments=None, cc=None, bcc=None):
+    """Send an email using the modern EmailMessage class with real attachments, CC, and BCC."""
+    service = get_gmail_service(account)
+    if not service:
+        return False
+    
+    try:
+        from email.message import EmailMessage
+        import re
+
+        # Create the modern EmailMessage
+        msg = EmailMessage()
+        msg["To"] = to
+        if cc:
+            msg["Cc"] = cc
+        if bcc:
+            msg["Bcc"] = bcc
+        msg["From"] = account["email"]
+        msg["Subject"] = subject
+
+        # Set the main body
+        msg.set_content(re.sub(r'<[^>]+>', '', body)) # Plain text fallback
+        msg.add_alternative(body, subtype='html') # HTML version
+
+        # Handle Real Attachments
+        if attachments:
+            print(f"[DEBUG] Modern Send: Processing {len(attachments)} attachments...")
+            for att in attachments:
+                try:
+                    data_str = att["data"]
+                    if "," in data_str:
+                        header, encoded = data_str.split(",", 1)
+                        # Extract mime type
+                        mime_full = header.split(":")[1].split(";")[0] if ":" in header else "application/octet-stream"
+                    else:
+                        encoded = data_str
+                        mime_full = "application/octet-stream"
+                    
+                    file_data = base64.b64decode(encoded)
+                    main_type, sub_type = mime_full.split("/") if "/" in mime_full else ("application", "octet-stream")
+                    
+                    print(f"[DEBUG] Adding part: {att['name']} ({mime_full})")
+                    msg.add_attachment(
+                        file_data,
+                        maintype=main_type,
+                        subtype=sub_type,
+                        filename=att["name"]
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Failed to attach {att.get('name')}: {e}")
+        else:
+            print("[DEBUG] Modern Send: No attachments found.")
+
+        # Encode and send
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
+        return True
+    except Exception as e:
+        print(f"[ERROR] Modern Send error: {e}")
+        return False
+
+def mark_as_read(account, gmail_id):
+    """Remove the UNREAD label from a message."""
+    service = get_gmail_service(account)
+    if not service:
+        return False
+    try:
+        service.users().messages().batchModify(
+            userId="me",
+            body={
+                "ids": [gmail_id],
+                "removeLabelIds": ["UNREAD"]
+            }
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"[ERROR] Error marking email {gmail_id} as read: {e}")
+        return False
+
+
+
+def parse_email_message(service, gmail_id, account_email):
+    """Fetch and parse a single email message from Gmail API."""
+    try:
         message = service.users().messages().get(
             userId="me",
             id=gmail_id,
             format="full",
         ).execute()
 
-        # --- Extract headers (Subject, From, Date) ---
         headers = message.get("payload", {}).get("headers", [])
         subject = ""
         sender = ""
@@ -178,13 +239,11 @@ def parse_email_message(service, gmail_id, account_email):
             elif name == "date":
                 date_str = header.get("value", "")
 
-        # --- Parse the received date ---
         try:
             received_at = parsedate_to_datetime(date_str)
         except Exception:
             received_at = datetime.utcnow()
 
-        # --- Extract the email body ---
         body = extract_body(message.get("payload", {}))
 
         return {
@@ -193,67 +252,37 @@ def parse_email_message(service, gmail_id, account_email):
             "sender": sender,
             "subject": subject,
             "body": body,
-            "received_at": received_at,
-            # is_junk and folder will be set by the AI classifier
+            "received_at": received_at.isoformat() if isinstance(received_at, datetime) else received_at,
+            "labelIds": message.get("labelIds", []),
         }
 
     except Exception as e:
-        print(f"❌ Error parsing email {gmail_id}: {e}")
+        print(f"[ERROR] Error parsing email {gmail_id}: {e}")
         return None
 
 
 def extract_body(payload):
-    """
-    Extract plain text body from a Gmail message payload.
-    
-    Gmail messages can be structured in different ways:
-    - Simple messages have the body directly in payload.body
-    - Multipart messages have the body in one of the parts
-    
-    This function handles both cases and decodes the base64 content.
-    
-    Args:
-        payload: The 'payload' field from a Gmail API message
-    
-    Returns:
-        Plain text body string (truncated to 5000 chars to save space)
-    """
-    body = ""
+    """Extract body from a Gmail message payload, preserving HTML if available."""
+    # 1. Try to find HTML part (to support our rich editor)
+    if "parts" in payload:
+        for part in payload["parts"]:
+            if part.get("mimeType") == "text/html":
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+            if "parts" in part:
+                res = extract_body(part)
+                if res and res != "(No content)": return res
 
-    # Case 1: Simple message — body is directly in payload
+    # 2. Fallback to Plain Text
     if "body" in payload and payload["body"].get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="ignore")
-        return body[:5000]  # Truncate very long emails
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="ignore")
 
-    # Case 2: Multipart message — look through the parts
-    parts = payload.get("parts", [])
-    for part in parts:
-        mime_type = part.get("mimeType", "")
-
-        # We prefer plain text over HTML
-        if mime_type == "text/plain":
-            data = part.get("body", {}).get("data", "")
-            if data:
-                body = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-                return body[:5000]
-
-        # If this part has sub-parts (nested multipart), recurse
-        if "parts" in part:
-            nested_body = extract_body(part)
-            if nested_body:
-                return nested_body
-
-    # Case 3: Fall back to HTML if no plain text found
-    for part in parts:
-        mime_type = part.get("mimeType", "")
-        if mime_type == "text/html":
-            data = part.get("body", {}).get("data", "")
-            if data:
-                body = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-                # Strip HTML tags for a rough plain text version
-                import re
-                body = re.sub(r"<[^>]+>", " ", body)
-                body = re.sub(r"\s+", " ", body).strip()
-                return body[:5000]
-
-    return body if body else "(No content)"
+    if "parts" in payload:
+        for part in payload["parts"]:
+            if part.get("mimeType") == "text/plain":
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+    
+    return "(No content)"

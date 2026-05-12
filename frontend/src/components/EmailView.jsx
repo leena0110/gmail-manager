@@ -46,15 +46,25 @@ export default function EmailView({ email }) {
           )}
 
           <div className="email-view-date">
-            {email.received_at ? format(new Date(email.received_at.endsWith('Z') ? email.received_at : email.received_at + 'Z'), 'MMM d, yyyy • h:mm a') : 'Unknown date'}
+            {(() => {
+              try {
+                if (!email.received_at) return 'Unknown date';
+                const date = new Date(email.received_at);
+                if (isNaN(date.getTime())) return 'Recently';
+                return format(date, 'MMMM d, yyyy • h:mm a');
+              } catch (e) {
+                return 'Recently';
+              }
+            })()}
           </div>
         </div>
       </div>
 
       <div className="email-view-body">
-        <div className="email-view-body-text">
-          {email.body || '(No text content)'}
-        </div>
+        <div 
+          className="email-view-body-text"
+          dangerouslySetInnerHTML={{ __html: email.body || '(No content)' }}
+        />
       </div>
     </div>
   );

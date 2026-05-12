@@ -31,10 +31,24 @@ accounts_collection = db["accounts"]
 # 'emails' collection: stores fetched emails with junk classification
 emails_collection = db["emails"]
 
-# Create an index on gmail_id to avoid duplicate emails
-emails_collection.create_index("gmail_id", unique=True)
+# Drop the old single-field unique index on gmail_id (if it exists)
+# This old index caused duplicate key errors across different accounts
+try:
+    emails_collection.drop_index("gmail_id_1")
+    print("[OK] Dropped old gmail_id_1 unique index")
+except Exception:
+    pass  # Index might not exist yet, that's fine
+
+# Create a COMPOUND unique index on (gmail_id + account_email)
+# This correctly allows the same gmail_id across different accounts
+emails_collection.create_index(
+    [("gmail_id", 1), ("account_email", 1)],
+    unique=True,
+    name="gmail_id_account_email_unique"
+)
 
 # Create an index on account_email for fast lookups
 emails_collection.create_index("account_email")
 
-print("✅ Connected to MongoDB Atlas successfully!")
+print("[OK] Connected to MongoDB Atlas successfully!")
+ 

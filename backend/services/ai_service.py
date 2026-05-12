@@ -81,11 +81,11 @@ Respond with ONLY one word: "junk" or "inbox". Nothing else."""
         is_junk = "junk" in result
 
         classification = "JUNK 🚫" if is_junk else "INBOX ✅"
-        print(f"   🤖 AI classified: {subject[:50]}... → {classification}")
+        print(f"   [AI] classified: {subject[:50]}... -> {classification}")
 
         return is_junk
 
     except Exception as e:
-        print(f"❌ AI classification error: {e}")
+        print(f"[ERROR] AI classification error: {e}")
         # If AI fails, default to inbox (don't accidentally hide important emails)
         return False

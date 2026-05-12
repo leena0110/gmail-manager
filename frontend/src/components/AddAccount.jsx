@@ -3,15 +3,25 @@ import { X, Plus, LogIn } from 'lucide-react';
 export default function AddAccount({ onClose }) {
   const handleGoogleLogin = async () => {
     try {
-      const response = await fetch('http://localhost:8000/auth/login');
+      const response = await fetch('http://127.0.0.1:8000/auth/login');
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Backend error:", errorText);
+        alert(`Backend Error: ${response.status}\nMake sure your .env file is correct.`);
+        return;
+      }
+
       const data = await response.json();
       if (data.auth_url) {
         // Redirect user to Google Login URL
         window.location.href = data.auth_url;
+      } else {
+        alert('Error: Backend did not return a valid Google login URL.');
       }
     } catch (error) {
       console.error('Failed to get login URL:', error);
-      alert('Could not connect to backend. Is it running?');
+      alert('Could not connect to backend!\n\nPlease open a terminal and run:\ncd backend\nuvicorn main:app --reload');
     }
   };
 
