@@ -25,8 +25,8 @@ async def list_accounts():
     # Convert to a list of dictionaries (safe for frontend)
     account_list = []
     for account in accounts:
-        # Use cached unread count from the database (updated by background sync)
-        unread_count = account.get("unread_count", 0)
+        # Fetch LIVE unread count directly from Gmail API (No database storage)
+        unread_count = get_unread_count(account)
         
         account_list.append({
             "id": str(account["_id"]),

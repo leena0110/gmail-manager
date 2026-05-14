@@ -91,13 +91,10 @@ def fetch_emails_from_gmail(account, folder="inbox", max_results=20):
         for msg in messages:
             email_data = parse_email_message(service, msg["id"], account["email"])
             if email_data:
-                # Use labelIds already fetched in parse_email_message
-                is_unread = "UNREAD" in email_data.get("labelIds", [])
-                email_data["is_unread"] = is_unread
-                
                 # Format for frontend
                 email_data["id"] = msg["id"]
                 email_data["folder"] = folder
+                email_data["is_junk"] = (folder == "junk")
                 fetched_emails.append(email_data)
 
         print(f"[DEBUG] Successfully parsed {len(fetched_emails)} emails for {account['email']}")
